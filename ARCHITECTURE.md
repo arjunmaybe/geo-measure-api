@@ -15,8 +15,8 @@ responsibilities.
 - persists files + features in SQLite,
 - exposes three REST endpoints with deterministic JSON contracts.
 
-Excluded: map viewer, comparison, auth, Docker, PostGIS, cloud, queues,
-payments.
+Out of scope for this MVP: authentication, PostGIS, background queues,
+and a UI.
 
 ## 2. API contract
 
@@ -147,8 +147,8 @@ Never return `INVALID_GEOSPATIAL_FILE`.
 - Centre lat outside `[-80, +84]` (inclusive boundaries valid) → `EPSG:6933`
   + warning. A dataset may extend beyond the range while its centre stays
   inside (documented limitation).
-- Lon span > 6° → warning (may defer multi-zone warning under deadline;
-  core behavior unaffected).
+- Lon span > 6° → warning (implemented; advanced multi-zone handling is
+  out of scope).
 - Projected bounds are converted to geographic via
   `Transformer(source → 4326, always_xy=True)` before UTM selection /
   validation. Raw eastings/northings are never treated as lon/lat.
