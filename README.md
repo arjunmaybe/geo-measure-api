@@ -181,9 +181,8 @@ All error bodies share the flat shape `{"detail": "…", "code": "…"}`.
 
 ## Coordinate Reference Systems and Measurements
 
-- KML defaults to `EPSG:4326`. Shapefiles use their `.prj` CRS when present
-  (write it as WKT1 — e.g. `WKT1_GDAL` — since that is the dialect the
-  shapefile driver recognizes).
+- KML defaults to `EPSG:4326`. Shapefiles use the `.prj` CRS when GDAL
+  can resolve it; if the CRS cannot be resolved, processing may fail.
 - A shapefile without `.prj` is assumed to be `EPSG:4326`
   (`crs_assumed: true`) only if every usable geometry bound is plausible
   longitude/latitude; otherwise the upload persists as `FAILED`.
@@ -285,8 +284,10 @@ directly and the ZIP through the app's own `safe_extract`.
 
 Omissions: no lint/type tool is configured (only `compileall` sanity);
 performance, concurrency, and production readiness were not measured or
-claimed. Manual verification performed after pushing `e00a1ae`: cloned that
-exact commit into a separate directory, installed requirements with the
-isolated `publish-check-venv`, ran all 95 tests successfully, ran
-`compileall`, and exercised both sample uploads plus file-info and
-measurements retrieval over HTTP. This was a manual check, not CI.
+claimed. Manual verification performed after pushing `b8a92e4`: cloned that
+exact commit into a separate directory, created a fresh `final-check-venv`,
+installed requirements there, ran all 95 tests successfully, ran
+`compileall`, and smoke-tested the API over HTTP — both sample uploads
+returned 201, both file-info and both measurements retrievals returned 200,
+with feature counts 3 (KML) and 2 (shapefile). This was a manual check,
+not CI.
