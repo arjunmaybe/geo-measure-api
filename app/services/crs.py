@@ -87,6 +87,33 @@ def _is_metre_projected(crs: CRS) -> bool:
     return True
 
 
+def _is_retainable(crs: CRS) -> bool:
+    """True when a source CRS may serve directly as the measurement CRS.
+
+    Metre-based projections are retained, except non-transverse Mercator
+    methods (e.g. Web-Mercator auxiliaries, World Mercator), whose metres
+    distort area away from the equator. Absent operation metadata keeps
+    the explicit EPSG exclusions as the fallback, never as a pass.
+    """
+    if not _is_metre_projected(crs):
+        return False
+    try:
+        epsg = crs.to_epsg()
+    except Exception:
+        epsg = None
+    if epsg in _NON_RETAINABLE_METRE:
+        return False
+    try:
+        operation = crs.coordinate_operation
+        method = operation.method_name if operation is not None else ""
+    except Exception:
+        method = ""
+    lowered = (method or "").lower()
+    if "mercator" in lowered and "transverse" not in lowered:
+        return False
+    return True
+
+
 def _to_geographic_bounds(
     source: CRS, bounds: tuple[float, float, float, float]
 ) -> tuple[float, float, float, float]:
@@ -168,8 +195,8 @@ def select_measurement_crs(
     """Select one measurement CRS for a file.
 
     - Validates bounds (finite, non-inverted).
-    - Retains a projected source CRS whose linear units are metres,
-      except deprecated Web-Mercator codes (3857/3785/900913).
+    - Retains a projected source CRS whose linear units are metres, except
+      non-transverse Mercator methods (e.g. 3857/3785/900913/3395).
     - Otherwise selects UTM from the geographic bbox centre, or EPSG:6933
       when the centre latitude is outside [-80, +84] (inclusive).
     - Warns when the geographic longitude span exceeds six degrees.
@@ -196,12 +223,8 @@ def select_measurement_crs(
         )
 
     # Retain metre-based projected CRSs (no reprojection needed), except
-    # deprecated Web-Mercator auxiliaries whose metres distort area.
-    try:
-        epsg = source.to_epsg()
-    except Exception:
-        epsg = None
-    if _is_metre_projected(source) and epsg not in _NON_RETAINABLE_METRE:
+    # non-transverse Mercator methods whose metres distort area.
+    if _is_retainable(source):
         return source, warnings
 
     centre_lon = (gminx + gmaxx) / 2.0

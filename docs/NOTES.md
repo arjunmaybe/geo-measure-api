@@ -7,7 +7,7 @@
 
 ## app/services/crs.py
 - Resolves source CRS (KML→4326, shapefile .prj, or cautious 4326 assumption).
-- Picks one measurement CRS per file: keep metre-projected, except deprecated Web-Mercator 3857/3785/900913 (not retained; normal UTM/6933 selection applies), else UTM by bbox centre.
+- Picks one measurement CRS per file: keep metre-projected, except non-transverse Mercator methods (3857/3785/900913/3395 via method name, EPSG list as fallback — not retained; normal UTM/6933 selection applies), else UTM by bbox centre.
 - Uses EPSG:6933 outside UTM latitudes and warns on wide longitude spans.
 - Every transformer uses `always_xy=True` to avoid lat/lon swap bugs.
 - Limitation: polar check uses the bbox centre, so data can extend past 84°N/-80°S while still picking UTM.

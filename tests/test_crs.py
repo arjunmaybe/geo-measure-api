@@ -210,10 +210,11 @@ def test_projected_bounds_converted_before_zone_selection():
     assert (gymin + gymax) / 2.0 == pytest.approx(50.0, abs=0.01)
 
 
-@pytest.mark.parametrize("epsg", [3857, 3785, 900913])
-def test_web_mercator_variants_never_retained(epsg):
-    # Deprecated Web-Mercator auxiliaries use metre units but must still
-    # select UTM from converted bounds (Philadelphia lon ~-75.1 -> 32618).
+@pytest.mark.parametrize("epsg", [3857, 3785, 900913, 3395])
+def test_non_transverse_mercator_never_retained(epsg):
+    # Non-transverse Mercator methods use metre units but must still select
+    # UTM from converted bounds (Philadelphia lon ~-75.1 -> 32618). Covers
+    # the Web-Mercator auxiliaries and EPSG:3395 (World Mercator).
     src = CRS.from_epsg(epsg)
     assert src.is_projected
     to_src = Transformer.from_crs(CRS.from_epsg(4326), src, always_xy=True)

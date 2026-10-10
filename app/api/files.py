@@ -87,7 +87,6 @@ def get_measurements(file_id: str, db: Session = Depends(get_db)) -> Measurement
     items: list[FeatureOut] = []
     for feat in features:
         out = FeatureOut.model_validate(feat)
-        related = feat.file
-        out.crs = related.source_crs if related is not None else None
+        out.crs = record.source_crs
         items.append(out)
     return MeasurementsOut(file_id=file_id, measurements=items)

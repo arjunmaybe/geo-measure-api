@@ -137,11 +137,11 @@ Never return `INVALID_GEOSPATIAL_FILE`.
 - Missing `.prj` → assume `EPSG:4326` (`crs_assumed=True`) only if every
   usable geometry bound is plausible lon/lat (`[-180,180] x [-90,90]`,
   finite); otherwise reject (→ persisted `FAILED`).
-- Retain projected source CRS whose linear units are metres, except the
-  deprecated Web-Mercator auxiliaries EPSG:3857, EPSG:3785, EPSG:900913
-  (spherical-formula metres distort area, so they are not retained).
-  Unretained CRSs go through normal selection: UTM within its latitude
-  range, EPSG:6933 outside it.
+- Retain projected source CRS whose linear units are metres, except
+  non-transverse Mercator methods — EPSG:3857, EPSG:3785, EPSG:900913,
+  EPSG:3395 and the like, detected via the operation method name with the
+  explicit EPSG list as fallback. Unretained CRSs go through normal
+  selection: UTM within its latitude range, EPSG:6933 outside it.
 - Else select UTM from geographic bbox centre: zone
   `clamp(floor((lon+180)/6)+1, 1, 60)`; `326xx` north / `327xx` south.
 - Centre lat outside `[-80, +84]` (inclusive boundaries valid) → `EPSG:6933`

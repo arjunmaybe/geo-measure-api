@@ -188,11 +188,13 @@ All error bodies share the flat shape `{"detail": "…", "code": "…"}`.
   (`crs_assumed: true`) only if every usable geometry bound is plausible
   longitude/latitude; otherwise the upload persists as `FAILED`.
 - A projected source CRS with metre units is kept as the measurement CRS,
-  except the deprecated Web-Mercator auxiliaries EPSG:3857, EPSG:3785, and
-  EPSG:900913: their spherical-formula metres distort area badly away from
-  the equator, so they are not retained and go through normal selection
-  (UTM within its latitude range, EPSG:6933 outside it; regression tested
-  near 45°N against a geodesic reference within 1%).
+  except non-transverse Mercator methods (Web-Mercator auxiliaries
+  EPSG:3857, EPSG:3785, EPSG:900913 and World Mercator EPSG:3395, detected
+  via the operation method name with that EPSG list as fallback): their
+  metres distort area badly away from the equator, so they are not retained
+  and go through normal selection (UTM within its latitude range, EPSG:6933
+  outside it; regression tested near 45°N against a geodesic reference
+  within 1%).
   Otherwise one UTM zone is selected from the geographic bounding-box centre
   (`326xx` north / `327xx` south, zone clamped to 1–60).
 - A centre latitude outside −80°…+84° (inclusive) selects `EPSG:6933` with a
@@ -206,6 +208,10 @@ All error bodies share the flat shape `{"detail": "…", "code": "…"}`.
 - Measurements happen only after reprojection, in metres (`m2`, `m`),
   returned as finite built-in floats. NaN/infinite/empty/inverted bounds are
   rejected, never silently assigned.
+- Known limitation: repairing an invalid geometry with `make_valid()` can
+  return a mixed `GeometryCollection`; the classifier marks it
+  `unsupported`, so polygonal area inside that collection may not be
+  measured even though the repair itself succeeded.
 
 ## Design Decisions
 
@@ -264,7 +270,7 @@ All error bodies share the flat shape `{"detail": "…", "code": "…"}`.
 python -m pytest -q
 ```
 
-94 tests across `test_crs.py` (UTM/polar/bounds/axis-order, Web-Mercator
+95 tests across `test_crs.py` (UTM/polar/bounds/axis-order, Web-Mercator
 exclusion), `test_measure.py` (analytical area/length, geodesic agreement,
 non-finite rejection), `test_geometry.py` (prepare/classify repair
 contract), `test_ingest.py` (traversal, member/size/decompressed limits,
