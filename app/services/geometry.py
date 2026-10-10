@@ -7,8 +7,9 @@ unrepairable geometry yields ``(None, True, message)`` so the caller marks
 the feature ERROR instead of failing the whole upload.
 
 ``classify`` maps a prepared geometry to a measurement kind. The caller
-reclassifies the *repaired* geometry, so a repair that changes the type
-(e.g. Polygon collapsing to a collection) is measured correctly.
+reclassifies the *repaired* output, since repair can change the type; a
+mixed GeometryCollection may then classify as unsupported, so polygonal
+area it contains may not be measured.
 """
 
 from __future__ import annotations

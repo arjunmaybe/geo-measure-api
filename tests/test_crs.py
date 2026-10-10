@@ -188,12 +188,10 @@ def test_utm_zone_math_lon10_lat50():
 
 def test_projected_bounds_converted_before_zone_selection():
     # Same geographic box (lon ~10, lat ~50) expressed in EPSG:3857 metres.
-    # EPSG:3857 is metre-projected so it is retained per spec; the point is
-    # that raw eastings (~1.1M) must never be read as longitude (which would
-    # clamp to zone 60 / EPSG:32660). Retention proves the metre check ran on
-    # CRS metadata, not on raw bound magnitudes. The non-metre conversion
-    # path (which must select UTM from converted bounds) is covered by
-    # test_projected_non_metre_conversion_mandatory.
+    # Web-Mercator metres distort area, so EPSG:3857 is never retained:
+    # bounds are converted to geographic and UTM is selected (32632).
+    # Raw eastings (~1.1M) must never be read as longitude (which would
+    # clamp to zone 60 / EPSG:32660).
     transformer = Transformer.from_crs(
         CRS.from_epsg(4326), CRS.from_epsg(3857), always_xy=True
     )
@@ -202,7 +200,7 @@ def test_projected_bounds_converted_before_zone_selection():
     crs, _ = select_measurement_crs(
         CRS.from_epsg(3857), (xmin, ymin, xmax, ymax)
     )
-    assert crs.to_epsg() == 3857
+    assert crs.to_epsg() == 32632
     # And the geographic conversion of those bounds centres on lon ~10:
     back = Transformer.from_crs(
         CRS.from_epsg(3857), CRS.from_epsg(4326), always_xy=True
@@ -210,6 +208,21 @@ def test_projected_bounds_converted_before_zone_selection():
     gxmin, gymin, gxmax, gymax = back.transform_bounds(xmin, ymin, xmax, ymax)
     assert (gxmin + gxmax) / 2.0 == pytest.approx(10.0, abs=0.01)
     assert (gymin + gymax) / 2.0 == pytest.approx(50.0, abs=0.01)
+
+
+@pytest.mark.parametrize("epsg", [3857, 3785, 900913])
+def test_web_mercator_variants_never_retained(epsg):
+    # Deprecated Web-Mercator auxiliaries use metre units but must still
+    # select UTM from converted bounds (Philadelphia lon ~-75.1 -> 32618).
+    src = CRS.from_epsg(epsg)
+    assert src.is_projected
+    to_src = Transformer.from_crs(CRS.from_epsg(4326), src, always_xy=True)
+    xmin, ymin = to_src.transform(-75.2, 39.9)
+    xmax, ymax = to_src.transform(-75.0, 40.1)
+    lox, hix = (xmin, xmax) if xmin <= xmax else (xmax, xmin)
+    loy, hiy = (ymin, ymax) if ymin <= ymax else (ymax, ymin)
+    crs, _ = select_measurement_crs(src, (lox, loy, hix, hiy))
+    assert crs.to_epsg() == 32618
 
 
 def test_projected_non_metre_conversion_mandatory():

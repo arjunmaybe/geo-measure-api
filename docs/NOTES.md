@@ -7,7 +7,7 @@
 
 ## app/services/crs.py
 - Resolves source CRS (KML→4326, shapefile .prj, or cautious 4326 assumption).
-- Picks one measurement CRS per file: keep metre-projected, else UTM by bbox centre.
+- Picks one measurement CRS per file: keep metre-projected, except deprecated Web-Mercator 3857/3785/900913 (not retained; normal UTM/6933 selection applies), else UTM by bbox centre.
 - Uses EPSG:6933 outside UTM latitudes and warns on wide longitude spans.
 - Every transformer uses `always_xy=True` to avoid lat/lon swap bugs.
 - Limitation: polar check uses the bbox centre, so data can extend past 84°N/-80°S while still picking UTM.
@@ -19,14 +19,14 @@
 
 ## app/services/readers.py
 - Reads shapefiles and KML with `pyogrio.raw.read` (numpy only), so GeoPandas is never needed at runtime.
-- KML falls back to a small secure lxml parser (no network, no entities) for Point/LineString/Polygon incl. holes.
+- KML is read across every GDAL layer (one per folder) with continuous indices, so multi-folder placemarks are never silently dropped; then falls back to a small secure lxml parser (no network, no entities) for Point/LineString/Polygon incl. holes.
 - Normalizes every property to JSON-safe values and reports parse errors without internal paths.
 - Limitation: pyogrio returns KML driver field names (e.g. capital `Name`), so property keys differ from the lxml path.
 
 ## app/services/geometry.py
 - `prepare` keeps missing/empty as None (EMPTY downstream), repairs invalid shapes with `make_valid`, and marks unrepairable ones for ERROR.
 - `classify` maps Polygon→area, LineString→length, Point/empty→none, anything else→unsupported.
-- Callers reclassify the repaired geometry, since repair can change the type.
+- Callers run `classify` on the prepared (possibly repaired) output before measuring, since repair can change the type; the ingestion lifecycle is prepare → classify → transform → measure.
 
 ## app/models.py and app/db.py
 - Two tables: `files` (UUID string id, statuses, CRS labels, warnings JSON) and `features` (indexed file_id FK, GeoJSON/properties JSON, measurement columns).
@@ -47,6 +47,6 @@
 
 ## app/schemas.py, app/api/files.py, and app/main.py
 - Schemas mirror the contract field-for-field with `from_attributes` ORM serialization; error bodies are always flat `{"detail", "code"}`.
-- Routes do HTTP plumbing only: the upload field is optional (missing → 400), size is enforced while streaming 1 MiB chunks (413 before extension checks), and service exceptions map to 415/422; COMPLETED and FAILED both return 201.
+- Routes do HTTP plumbing only: the upload field is optional (missing → 400), size is enforced while re-reading the received file in 1 MiB chunks (413 before extension checks), and service exceptions map to 415/422; COMPLETED and FAILED both return 201.
 - Handlers cover `ApiError`, request-validation errors (`VALIDATION_ERROR`), and unexpected exceptions (generic 500, no tracebacks/paths).
 - Tests override the `get_db` dependency with isolated file-backed SQLite databases; lifespan startup may create the gitignored default DB, which is local-dev only.

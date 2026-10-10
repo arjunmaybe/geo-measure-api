@@ -17,7 +17,7 @@ import zipfile
 from pathlib import Path
 
 import pytest
-from pyproj import CRS, Transformer
+from pyproj import CRS, Geod, Transformer
 from shapely.geometry import LineString, Polygon
 from shapely.ops import transform as shp_transform
 from sqlalchemy import create_engine
@@ -58,6 +58,26 @@ EMPTY_KML = (
     '<?xml version="1.0" encoding="UTF-8"?>\n'
     '<kml xmlns="http://www.opengis.net/kml/2.2">\n'
     "  <Document><name>empty</name></Document>\n"
+    "</kml>\n"
+).encode()
+
+TWO_FOLDER_KML = (
+    '<?xml version="1.0" encoding="UTF-8"?>\n'
+    '<kml xmlns="http://www.opengis.net/kml/2.2">\n'
+    "  <Document><name>folders</name>\n"
+    "    <Folder><name>north</name>\n"
+    "      <Placemark><name>plot_n</name><Polygon>"
+    "<outerBoundaryIs><LinearRing><coordinates>"
+    "10.0,50.0,0 10.001,50.0,0 10.001,50.001,0 10.0,50.001,0 10.0,50.0,0"
+    "</coordinates></LinearRing></outerBoundaryIs></Polygon></Placemark>\n"
+    "    </Folder>\n"
+    "    <Folder><name>south</name>\n"
+    "      <Placemark><name>plot_s</name><Polygon>"
+    "<outerBoundaryIs><LinearRing><coordinates>"
+    "11.0,51.0,0 11.001,51.0,0 11.001,51.001,0 11.0,51.001,0 11.0,51.0,0"
+    "</coordinates></LinearRing></outerBoundaryIs></Polygon></Placemark>\n"
+    "    </Folder>\n"
+    "  </Document>\n"
     "</kml>\n"
 ).encode()
 
@@ -483,6 +503,69 @@ def test_one_bad_feature_does_not_abort(db, sample_kml_bytes, monkeypatch):
     )
     assert [f.status for f in feats] == ["MEASURED", "ERROR", "NOT_APPLICABLE"]
     assert feats[1].message and "boom" in feats[1].message
+
+
+def test_kml_two_folders_yields_two_features(db):
+    # The GDAL KML driver exposes one layer per folder; the reader must
+    # process every layer so no placemark is silently dropped.
+    record = process_upload("folders.kml", TWO_FOLDER_KML, db)
+    assert record.status == "COMPLETED"
+    assert record.feature_count == 2
+    feats = (
+        db.query(Feature).filter_by(file_id=record.id).order_by(Feature.idx).all()
+    )
+    assert len(feats) == 2
+    names = {f.properties.get("Name", f.properties.get("name")) for f in feats}
+    assert names == {"plot_n", "plot_s"}
+    assert all(f.status == "MEASURED" for f in feats)
+
+
+def test_kml_same_name_folders_yields_both_features(db):
+    # Two folders may share a name: layers are addressed by index so the
+    # second folder's placemark is not lost to a name-lookup collision.
+    payload = TWO_FOLDER_KML.replace(b"<name>north</name>", b"<name>dup</name>")
+    payload = payload.replace(b"<name>south</name>", b"<name>dup</name>")
+    record = process_upload("dupfolders.kml", payload, db)
+    assert record.status == "COMPLETED"
+    assert record.feature_count == 2
+    feats = (
+        db.query(Feature).filter_by(file_id=record.id).order_by(Feature.idx).all()
+    )
+    assert len(feats) == 2
+    names = {f.properties.get("Name", f.properties.get("name")) for f in feats}
+    assert names == {"plot_n", "plot_s"}
+
+
+def test_web_mercator_source_measures_in_utm_near_45n(db, tmp_path):
+    # EPSG:3857 must never be retained: a polygon near 45N is reprojected
+    # to UTM and its area must agree with an independent geodesic
+    # reference within 1% (Web-Mercator metres would be ~40% too large).
+    outer = [(10.0, 45.0), (10.01, 45.0), (10.01, 45.01),
+             (10.0, 45.01), (10.0, 45.0)]
+    to_3857 = Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True)
+    ring_3857 = [to_3857.transform(x, y) for x, y in outer]
+    d = tmp_path / "merc"
+    d.mkdir()
+    _write_minimal_shapefile(d, "m", [[ring_3857]], names=["field"])
+    (d / "m.prj").write_text(
+        CRS.from_epsg(3857).to_wkt("WKT1_GDAL"), encoding="utf-8"
+    )
+    payload = _zip_bytes({
+        "m.shp": (d / "m.shp").read_bytes(),
+        "m.shx": (d / "m.shx").read_bytes(),
+        "m.dbf": (d / "m.dbf").read_bytes(),
+        "m.prj": (d / "m.prj").read_bytes(),
+    })
+    record = process_upload("m.zip", payload, db)
+    assert record.status == "COMPLETED"
+    assert record.source_crs == "EPSG:3857"
+    assert record.measurement_crs == "EPSG:32632"
+    feat = db.query(Feature).filter_by(file_id=record.id).one()
+    assert feat.status == "MEASURED"
+    assert feat.measure_unit == "m2"
+    geod = Geod(ellps="WGS84")
+    ref, _ = geod.geometry_area_perimeter(Polygon(outer))
+    assert feat.measure_value == pytest.approx(abs(ref), rel=0.01)
 
 
 def test_zero_features_completed_null_crs(db):

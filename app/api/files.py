@@ -18,7 +18,7 @@ from app import config
 from app.api.errors import ApiError
 from app.db import get_db
 from app.models import Feature, File
-from app.schemas import FileInfo, MeasurementsOut
+from app.schemas import FeatureOut, FileInfo, MeasurementsOut
 from app.services import ingest
 
 router = APIRouter(prefix="/api")
@@ -84,4 +84,10 @@ def get_measurements(file_id: str, db: Session = Depends(get_db)) -> Measurement
         .order_by(Feature.idx)
         .all()
     )
-    return MeasurementsOut(file_id=file_id, measurements=features)
+    items: list[FeatureOut] = []
+    for feat in features:
+        out = FeatureOut.model_validate(feat)
+        related = feat.file
+        out.crs = related.source_crs if related is not None else None
+        items.append(out)
+    return MeasurementsOut(file_id=file_id, measurements=items)

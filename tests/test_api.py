@@ -11,13 +11,12 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
-from pyproj import CRS
 from sqlalchemy.orm import sessionmaker
 
 from app import config
 from app.db import get_db, init_db, make_engine
 from app.main import app
-from app.models import File
+from app.models import Feature, File
 from tests.test_ingest import _write_minimal_shapefile, _zip_bytes
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
@@ -29,6 +28,7 @@ FILE_INFO_FIELDS = {
     "error",
     "source_crs",
     "measurement_crs",
+    "crs",
     "crs_assumed",
     "feature_count",
     "warnings",
@@ -48,6 +48,7 @@ FEATURE_OUT_FIELDS = {
     "measure_value",
     "measure_unit",
     "message",
+    "crs",
 }
 
 
@@ -107,6 +108,7 @@ def test_post_zip_upload(env, sample_zip_bytes):
     assert body["status"] == "COMPLETED"
     assert body["filename"] == "sample-shapefile.zip"
     assert body["source_crs"] == "EPSG:4326"
+    assert body["crs"] == body["source_crs"]
     assert body["measurement_crs"] == "EPSG:32632"
     assert body["crs_assumed"] is False
     assert body["feature_count"] == 2
@@ -123,6 +125,7 @@ def test_post_kml_upload(env, sample_kml_bytes):
     assert resp.status_code == 201, resp.text
     body = resp.json()
     assert body["status"] == "COMPLETED"
+    assert body["crs"] == body["source_crs"] == "EPSG:4326"
     assert body["feature_count"] == 3
 
 
@@ -157,6 +160,9 @@ def test_get_measurements(env, sample_kml_bytes):
     assert len(body["measurements"]) == 3
     for feat in body["measurements"]:
         assert set(feat.keys()) == FEATURE_OUT_FIELDS
+        # Per-feature crs is the owning file's *source* CRS, never the
+        # measurement CRS.
+        assert feat["crs"] == "EPSG:4326"
     statuses = [f["status"] for f in body["measurements"]]
     assert "MEASURED" in statuses
     # Point feature: area/length does not apply.
@@ -245,7 +251,34 @@ def test_unreadable_supported_returns_201_failed(env):
     body = resp.json()
     assert body["status"] == "FAILED"
     assert body["error"]
+    assert body["source_crs"] is None
+    assert body["crs"] is None
     assert _db_file_count(env["sessions"]) == 1
+
+
+def test_failed_upload_full_response_body(env):
+    # A FAILED upload returns the complete FileInfo contract, not a subset.
+    resp = env["client"].post(
+        "/api/files/",
+        files={"file": ("junk.kml", b"\x00\x01\x02 binary garbage")},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert set(body.keys()) == FILE_INFO_FIELDS
+    assert body["filename"] == "junk.kml"
+    assert body["status"] == "FAILED"
+    assert isinstance(body["error"], str) and body["error"]
+    assert body["source_crs"] is None
+    assert body["measurement_crs"] is None
+    assert body["crs"] is None
+    assert body["crs_assumed"] is False
+    assert body["feature_count"] == 0
+    assert body["warnings"] == []
+    assert isinstance(body["id"], str) and body["id"]
+    from datetime import datetime
+
+    assert datetime.fromisoformat(body["created_at"])
 
 
 def test_unresolved_crs_returns_201_failed(env, tmp_path):
@@ -274,6 +307,7 @@ def test_unresolved_crs_returns_201_failed(env, tmp_path):
     body = resp.json()
     assert body["status"] == "FAILED"
     assert body["error"]
+    assert body["crs"] == body["source_crs"]
     assert _db_file_count(env["sessions"]) == 1
 
 
@@ -300,6 +334,44 @@ def test_unexpected_error_500_without_leak(env, tmp_path, sample_kml_bytes, monk
     assert set(body.keys()) == {"detail", "code"}
     assert "Traceback" not in resp.text
     assert "boom" not in resp.text
+
+
+def test_feature_crs_nullable_when_source_unavailable(env):
+    # No ingest path persists features without a source CRS, so insert
+    # directly: serialization must still emit crs as null on both shapes.
+    session = env["sessions"]()
+    try:
+        session.add(
+            File(
+                id="noloc",
+                filename="x.kml",
+                status="COMPLETED",
+                source_crs=None,
+                measurement_crs=None,
+                crs_assumed=False,
+                feature_count=1,
+                warnings=[],
+            )
+        )
+        session.add(
+            Feature(
+                file_id="noloc",
+                idx=0,
+                status="EMPTY",
+                properties={},
+                geometry_repaired=False,
+            )
+        )
+        session.commit()
+    finally:
+        session.close()
+    client = env["client"]
+    meas = client.get("/api/files/noloc/measurements/", follow_redirects=False)
+    assert meas.status_code == 200
+    assert meas.json()["measurements"][0]["crs"] is None
+    info = client.get("/api/files/noloc/", follow_redirects=False).json()
+    assert info["source_crs"] is None
+    assert info["crs"] is None
 
 
 def test_restart_persistence(tmp_path, sample_kml_bytes):

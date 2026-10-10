@@ -144,11 +144,52 @@ def read_shapefile(path: Path) -> ReadResult:
     return _read_pyogrio(Path(path), "shapefile")
 
 
+def _read_kml_pyogrio_layers(path: Path) -> ReadResult:
+    """Read KML across every GDAL layer (one per folder).
+
+    The KML driver exposes each folder as a separate layer while the
+    default read only returns the first, silently dropping placemarks.
+    Indices are continuous across layers.
+    """
+    from pyogrio import list_layers
+    from pyogrio import raw as pyogrio_raw
+
+    try:
+        layer_info = list_layers(str(path))
+        count = len(layer_info) if layer_info is not None else 0
+    except Exception as exc:
+        raise ReadError(f"{path.name}: cannot parse kml contents") from exc
+    if not count:
+        return _read_pyogrio(path, "kml")
+    features: list[RawFeature] = []
+    crs: CRS | None = None
+    # Iterate by numeric index: two folders may share the same name, so
+    # name lookup would read the same layer twice and drop a placemark.
+    for layer_index in range(count):
+        try:
+            meta, _fids, wkb, field_arrays = pyogrio_raw.read(
+                str(path), layer=layer_index, force_2d=True
+            )
+        except Exception as exc:
+            raise ReadError(f"{path.name}: cannot parse kml contents") from exc
+        if crs is None:
+            crs = _decode_crs(meta.get("crs"), path.name)
+        geoms = _geoms_from_wkb(wkb if wkb is not None else [], path.name)
+        props = _props_from_raw(meta, field_arrays)
+        while len(props) < len(geoms):
+            props.append({})
+        for geom, prop in zip(geoms, props):
+            features.append(
+                RawFeature(index=len(features), geometry=geom, properties=prop)
+            )
+    return ReadResult(features=features, crs=crs, format="kml")
+
+
 def read_kml(path: Path) -> ReadResult:
     """Read a standalone KML file (pyogrio first, secure lxml fallback)."""
     path = Path(path)
     try:
-        return _read_pyogrio(path, "kml")
+        return _read_kml_pyogrio_layers(path)
     except ReadError:
         pass
     except Exception:

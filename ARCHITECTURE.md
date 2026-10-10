@@ -1,10 +1,7 @@
 # ARCHITECTURE.md — geo-measure-api
 
-> Status: created by implementation engineer as no original `ARCHITECTURE.md`
-> existed in the new workspace (empty folder, no Git history).
-> This document is the source of truth for API routes, schemas, and module
-> responsibilities. The fallback response contract from the build prompt
-> (§3) is adopted verbatim. Any inferred details are marked `[inferred]`.
+This document is the source of truth for API routes, schemas, and module
+responsibilities.
 
 ## 1. Overview
 
@@ -29,10 +26,12 @@ Base: FastAPI app `app.main:app`. Swagger UI at `/docs`.
 
 - Request: `multipart/form-data` with optional file field named `file`
   (`filename`, bytes). Declared optional at the FastAPI boundary so a missing
-  file returns `400 NO_FILE` instead of FastAPI's default 422 `[inferred:
-  field name `file`]`.
-- Uploads are read in bounded chunks; files over 25 MB return `413
-  FILE_TOO_LARGE` before full materialization.
+  file returns `400 NO_FILE` instead of FastAPI's default 422.
+- Uploads are re-read from the received `UploadFile` in bounded 1 MiB
+  chunks; files over 25 MB return `413 FILE_TOO_LARGE` while reading,
+  before extension checks. Starlette parses/spools the multipart body
+  before the route runs, so this limits materialization, not body parsing
+  (see README for proxy-level recommendations).
 - Unsupported extension (not `.zip` / `.kml`) returns `415 UNSUPPORTED_TYPE`.
 - Unsafe/malformed ZIP, traversal, archive-limit violations, or missing
   required shapefile sidecars return `422 INVALID_ARCHIVE` with no persisted
@@ -57,14 +56,15 @@ Base: FastAPI app `app.main:app`. Swagger UI at `/docs`.
 **FileInfo** (exact fields):
 
 ```
-id, filename, status, error, source_crs, measurement_crs,
+id, filename, status, error, source_crs, measurement_crs, crs,
 crs_assumed, feature_count, warnings, created_at
 ```
 
 - `status`: `PROCESSING | COMPLETED | FAILED`
-- `source_crs` / `measurement_crs`: EPSG strings such as `EPSG:4326`,
-  `EPSG:32633`, or `null` when unresolvable/inapplicable (empty dataset)
-  `[inferred: string form `EPSG:<code>`]`.
+- `source_crs` / `measurement_crs`: EPSG strings such as `EPSG:4326` or
+  `EPSG:32633`, or `null` when unresolvable/inapplicable (empty dataset).
+- `crs`: equals `source_crs`, including `null` when the source CRS is
+  unavailable. Derived at response time, not stored.
 - `warnings`: `string[]`.
 - `created_at`: ISO-8601 datetime.
 
@@ -72,12 +72,15 @@ crs_assumed, feature_count, warnings, created_at
 
 ```
 id, file_id, idx, geometry_type, geometry_geojson, properties,
-geometry_repaired, status, measure_type, measure_value, measure_unit, message
+geometry_repaired, status, measure_type, measure_value, measure_unit, message,
+crs
 ```
 
 - `status`: `MEASURED | NOT_APPLICABLE | UNSUPPORTED | EMPTY | ERROR`
 - `measure_type`: `area | length | null`; `measure_unit`: `m2 | m | null`
-  `[inferred: null when no measurement]`.
+  (null when no measurement applies).
+- `crs`: the owning file's source CRS, never the measurement CRS; `null`
+  when the source CRS is unavailable. Derived from the File record, not stored.
 - `geometry_geojson`: JSON-compatible GeoJSON dict or `null`.
 - `properties`: JSON-compatible dict.
 
@@ -95,7 +98,7 @@ geometry_repaired, status, measure_type, measure_value, measure_unit, message
 | Unsafe/malformed ZIP, traversal, archive limits exceeded, missing required sidecars | 422 | `INVALID_ARCHIVE`, no file record left behind |
 | Unknown file ID | 404 | `NOT_FOUND` |
 | Supported upload, unparsable or CRS unresolvable | 201 | persisted `status = FAILED` + error message |
-| Other request-validation failures | 422 | `VALIDATION_ERROR` `[inferred]` |
+| Other request-validation failures | 422 | `VALIDATION_ERROR` |
 | Unexpected server error | 500 | generic body, no traceback/paths |
 
 Never return `INVALID_GEOSPATIAL_FILE`.
@@ -115,8 +118,8 @@ Never return `INVALID_GEOSPATIAL_FILE`.
 - `app/services/measure.py`: `measure(geom_projected, kind)` → area/length
   dicts or `None`; finite built-in floats only.
 - `app/services/ingest.py`: `safe_extract`, `process_upload`; validate →
-  persist → extract/read → resolve CRS → select CRS → prepare → transform →
-  measure → persist → finalize; per-feature isolation; temp cleanup.
+  persist → extract/read → resolve CRS → select CRS → prepare → classify →
+  transform → measure → persist → finalize; per-feature isolation; temp cleanup.
 - `app/db.py`: engine/session/init, FK enforcement, test isolation.
 - `app/models.py`: `files` + `features` tables per prompt §4.
 - `app/schemas.py`: Pydantic `FileInfo`, `FeatureOut`, `MeasurementsOut`,
@@ -134,7 +137,11 @@ Never return `INVALID_GEOSPATIAL_FILE`.
 - Missing `.prj` → assume `EPSG:4326` (`crs_assumed=True`) only if every
   usable geometry bound is plausible lon/lat (`[-180,180] x [-90,90]`,
   finite); otherwise reject (→ persisted `FAILED`).
-- Retain projected source CRS whose linear units are metres.
+- Retain projected source CRS whose linear units are metres, except the
+  deprecated Web-Mercator auxiliaries EPSG:3857, EPSG:3785, EPSG:900913
+  (spherical-formula metres distort area, so they are not retained).
+  Unretained CRSs go through normal selection: UTM within its latitude
+  range, EPSG:6933 outside it.
 - Else select UTM from geographic bbox centre: zone
   `clamp(floor((lon+180)/6)+1, 1, 60)`; `326xx` north / `327xx` south.
 - Centre lat outside `[-80, +84]` (inclusive boundaries valid) → `EPSG:6933`
@@ -150,7 +157,7 @@ Never return `INVALID_GEOSPATIAL_FILE`.
 ## 5. Persistence & lifecycle
 
 `validate → persist file → extract/read → resolve CRS → select measurement
-CRS → prepare → transform → measure → persist features → finalize`.
+CRS → prepare → classify → transform → measure → persist features → finalize`.
 
 - File: `PROCESSING → COMPLETED | FAILED`.
 - Feature: `MEASURED | NOT_APPLICABLE (points) | UNSUPPORTED |
@@ -165,10 +172,13 @@ CRS → prepare → transform → measure → persist features → finalize`.
 
 - Treat filenames, bytes, ZIP members, geometries, properties, parser errors
   as untrusted.
-- Enforce 25 MB upload (streamed), 50 members, 200 MB declared + actual
-  decompressed limits.
+- Enforce 25 MB upload (bounded re-reads of the received file; a
+  proxy-level body limit is still recommended), 50 members, 200 MB declared
+  + actual decompressed limits.
 - Reject traversal/absolute paths/symlinks/unsupported entries; resolve each
   target inside the extraction dir; require exactly one `.shp` + `.shx` +
   `.dbf`; `.prj`/`.cpg` optional.
 - Parameterized ORM access; FK on; generic 500s without paths/tracebacks.
+- The async upload route runs blocking GDAL/Shapely/SQLite work inline,
+  which blocks the event loop under load — local/demo use only.
 - No auth: file IDs are not authorization; local/demo use only.

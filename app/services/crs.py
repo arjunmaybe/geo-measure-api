@@ -15,7 +15,11 @@ if TYPE_CHECKING:  # avoid a runtime dependency on readers (Phase 2)
     from app.services.readers import ReadResult
 
 _GEO_CRS = CRS.from_epsg(4326)
-_POLAR_CRS = CRS.from_epsg(6933)
+
+# Deprecated Web-Mercator codes on a spherical formulae: metre units but
+# severe area distortion away from the equator. Never retained as a
+# measurement CRS; fall through to UTM selection instead.
+_NON_RETAINABLE_METRE = frozenset({3857, 3785, 900913})
 
 _UTM_LAT_MIN = -80.0
 _UTM_LAT_MAX = 84.0
@@ -24,10 +28,6 @@ _LON_MIN = -180.0
 _LON_MAX = 180.0
 _LAT_MIN = -90.0
 _LAT_MAX = 90.0
-
-
-def _is_finite_number(value: object) -> bool:
-    return isinstance(value, (int, float)) and math.isfinite(float(value))
 
 
 def _validate_bounds(bounds: tuple) -> tuple[float, float, float, float]:
@@ -45,12 +45,10 @@ def _validate_bounds(bounds: tuple) -> tuple[float, float, float, float]:
         raise ValueError(f"bounds must be finite, got {bounds!r}")
     if minx > maxx or miny > maxy:
         raise ValueError(f"bounds are inverted or empty, got {bounds!r}")
-    if minx == maxx and miny == maxy:
-        # A degenerate point bound is technically usable for UTM selection
-        # (centre is well-defined), so allow it. Truly "empty" datasets
-        # (no usable bounds at all) are rejected by the caller passing no
-        # bounds / the resolve step raising first.
-        pass
+    # A degenerate point bound is usable for UTM selection (its centre is
+    # well-defined), so it falls through. Truly "empty" datasets (no usable
+    # bounds at all) are rejected by the caller passing no bounds / the
+    # resolve step raising first.
     return minx, miny, maxx, maxy
 
 
@@ -101,7 +99,7 @@ def _to_geographic_bounds(
     except Exception as exc:
         raise ValueError(f"cannot convert bounds to geographic: {exc}") from exc
     if not all(math.isfinite(v) for v in (gminx, gminy, gmaxx, gmaxy)):
-        raise ValueError(f"projected bounds convert to non-finite geographic bounds")
+        raise ValueError("projected bounds convert to non-finite geographic bounds")
     return gminx, gminy, gmaxx, gmaxy
 
 
@@ -170,7 +168,8 @@ def select_measurement_crs(
     """Select one measurement CRS for a file.
 
     - Validates bounds (finite, non-inverted).
-    - Retains a projected source CRS whose linear units are metres.
+    - Retains a projected source CRS whose linear units are metres,
+      except deprecated Web-Mercator codes (3857/3785/900913).
     - Otherwise selects UTM from the geographic bbox centre, or EPSG:6933
       when the centre latitude is outside [-80, +84] (inclusive).
     - Warns when the geographic longitude span exceeds six degrees.
@@ -196,8 +195,13 @@ def select_measurement_crs(
             "central meridian"
         )
 
-    # Retain metre-based projected CRSs (no reprojection needed).
-    if _is_metre_projected(source):
+    # Retain metre-based projected CRSs (no reprojection needed), except
+    # deprecated Web-Mercator auxiliaries whose metres distort area.
+    try:
+        epsg = source.to_epsg()
+    except Exception:
+        epsg = None
+    if _is_metre_projected(source) and epsg not in _NON_RETAINABLE_METRE:
         return source, warnings
 
     centre_lon = (gminx + gmaxx) / 2.0

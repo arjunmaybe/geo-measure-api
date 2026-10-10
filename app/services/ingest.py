@@ -1,8 +1,8 @@
 """Upload ingestion: validate, extract, read, reproject, measure, persist.
 
 Pipeline: validate -> persist file -> extract/read -> resolve CRS ->
-select measurement CRS -> prepare geometry -> transform -> measure ->
-persist features -> finalize status.
+select measurement CRS -> prepare geometry -> classify -> transform ->
+measure -> persist features -> finalize status.
 
 Per-feature failures are isolated: one bad feature becomes ERROR while the
 rest still process. Temporary extraction data lives in a
@@ -12,6 +12,7 @@ rest still process. Temporary extraction data lives in a
 from __future__ import annotations
 
 import io
+import math
 import shutil
 import stat
 import tempfile
@@ -229,8 +230,6 @@ def _feature_bounds(features: list[RawFeature]) -> tuple | None:
             x0, y0, x1, y1 = (float(v) for v in b)
         except (TypeError, ValueError):
             continue
-        import math
-
         if not all(math.isfinite(v) for v in (x0, y0, x1, y1)):
             continue
         if x0 > x1 or y0 > y1:
