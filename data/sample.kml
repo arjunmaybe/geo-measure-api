@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+  <Document>
+    <name>geo-measure-api sample</name>
+    <description>Deterministic sample: polygon with hole, road, well.</description>
+    <Placemark>
+      <name>square</name>
+      <description>Approx 111 by 71 m square with a courtyard hole</description>
+      <ExtendedData>
+        <Data name="kind"><value>garden</value></Data>
+      </ExtendedData>
+      <Polygon>
+        <outerBoundaryIs>
+          <LinearRing>
+            <coordinates>10.000000,50.000000,0 10.001000,50.000000,0 10.001000,50.001000,0 10.000000,50.001000,0 10.000000,50.000000,0</coordinates>
+          </LinearRing>
+        </outerBoundaryIs>
+        <innerBoundaryIs>
+          <LinearRing>
+            <coordinates>10.000400,50.000400,0 10.000600,50.000400,0 10.000600,50.000600,0 10.000400,50.000600,0 10.000400,50.000400,0</coordinates>
+          </LinearRing>
+        </innerBoundaryIs>
+      </Polygon>
+    </Placemark>
+    <Placemark>
+      <name>road</name>
+      <description>Approx 143 m road segment</description>
+      <LineString>
+        <coordinates>10.000000,50.000000,0 10.002000,50.000000,0</coordinates>
+      </LineString>
+    </Placemark>
+    <Placemark>
+      <name>well</name>
+      <description>Point feature: no area/length applies</description>
+      <Point>
+        <coordinates>10.000000,50.000000,0</coordinates>
+      </Point>
+    </Placemark>
+  </Document>
+</kml>
